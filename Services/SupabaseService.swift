@@ -3,8 +3,13 @@ import Combine
 import Supabase
 import Auth
 
+// MARK: - Date Formatter Extension
+extension ISO8601DateFormatter {
+    static let shared = ISO8601DateFormatter()
+}
+
 // MARK: - User Profile Model
-struct UserProfile: Identifiable {
+struct UserProfile: Codable, Identifiable {
     let id: UUID
     let email: String
     let createdAt: Date
@@ -25,7 +30,7 @@ struct UserProfile: Identifiable {
         case totalJournalEntries = "total_journal_entries"
     }
     
-    fileprivate init(from supabaseUser: User, profile: UserProfileDB? = nil) {
+    init(from supabaseUser: User, profile: UserProfileDB? = nil) {
         self.id = UUID(uuidString: supabaseUser.id.uuidString) ?? UUID()
         self.email = supabaseUser.email ?? ""
         self.createdAt = supabaseUser.createdAt
@@ -38,21 +43,6 @@ struct UserProfile: Identifiable {
         self.totalJournalEntries = profile?.totalJournalEntries ?? 0
     }
 }
-
-extension UserProfile: Decodable {
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decode(UUID.self, forKey: .id)
-        self.email = try container.decode(String.self, forKey: .email)
-        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
-        self.selectedPath = try container.decodeIfPresent(UserPath.self, forKey: .selectedPath)
-        self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
-        self.onboardingCompleted = try container.decode(Bool.self, forKey: .onboardingCompleted)
-        self.streak = try container.decode(Int.self, forKey: .streak)
-        self.totalJournalEntries = try container.decode(Int.self, forKey: .totalJournalEntries)
-    }
-}
-
 
 // MARK: - Database Profile Model (for Supabase table)
 private struct UserProfileDB: Codable {
@@ -99,8 +89,53 @@ struct AuthSession: Codable {
     init(from supabaseSession: Session) {
         self.accessToken = supabaseSession.accessToken
         self.refreshToken = supabaseSession.refreshToken
-        self.expiresAt = Date(timeIntervalSince1970: supabaseSession.expiresAt)
+        self.expiresAt = supabaseSession.expiresAt
     }
+}
+
+// MARK: - Update Payloads
+private struct PathUpdatePayload: Codable {
+    let selected_path: String
+    let updated_at: String
+}
+
+private struct OnboardingUpdatePayload: Codable {
+    let onboarding_completed: Bool
+    let updated_at: String
+}
+
+private struct DisplayNameUpdatePayload: Codable {
+    let display_name: String
+    let updated_at: String
+}
+
+private struct StreakUpdatePayload: Codable {
+    let streak: Int
+    let updated_at: String
+}
+
+private struct JournalCountUpdatePayload: Codable {
+    let total_journal_entries: Int
+    let updated_at: String
+}
+
+private struct JournalEntryPayload: Codable {
+    let id: String
+    let user_id: String
+    let date: String
+    let user_path: String
+    let title: String?
+    let content: String
+    let mood: Int?
+    let ai_summary: String?
+    let ai_reflection: String?
+    let ai_insights: String?
+    let voice_note_url: String?
+    let voice_transcript: String?
+    let tags: String?
+    let is_private: Bool
+    let created_at: String
+    let updated_at: String
 }
 
 // MARK: - Supabase Service
@@ -270,13 +305,15 @@ class SupabaseService: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        let payload = PathUpdatePayload(
+            selected_path: path.rawValue,
+            updated_at: ISO8601DateFormatter.shared.string(from: Date())
+        )
+        
         do {
             try await supabase
                 .from("profiles")
-                .update([
-                    "selected_path": path.rawValue,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id.uuidString)
                 .execute()
             
@@ -302,13 +339,15 @@ class SupabaseService: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        let payload = OnboardingUpdatePayload(
+            onboarding_completed: true,
+            updated_at: ISO8601DateFormatter.shared.string(from: Date())
+        )
+        
         do {
             try await supabase
                 .from("profiles")
-                .update([
-                    "onboarding_completed": AnyJSON.bool(true),
-                    "updated_at": AnyJSON.string(ISO8601DateFormatter().string(from: Date()))
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id.uuidString)
                 .execute()
             
@@ -334,13 +373,15 @@ class SupabaseService: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        let payload = DisplayNameUpdatePayload(
+            display_name: displayName,
+            updated_at: ISO8601DateFormatter.shared.string(from: Date())
+        )
+        
         do {
             try await supabase
                 .from("profiles")
-                .update([
-                    "display_name": displayName,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id.uuidString)
                 .execute()
             
@@ -358,10 +399,6 @@ class SupabaseService: ObservableObject {
             return false
         }
     }
-    private struct StreakUpdatePayload: Codable {
-        let streak: Int
-        let updated_at: String
-    }
     
     // MARK: - Update Streak
     func updateStreak(_ newStreak: Int) async -> Bool {
@@ -369,8 +406,9 @@ class SupabaseService: ObservableObject {
         
         let payload = StreakUpdatePayload(
             streak: newStreak,
-            updated_at: ISO8601DateFormatter().string(from: Date())
+            updated_at: ISO8601DateFormatter.shared.string(from: Date())
         )
+        
         do {
             try await supabase
                 .from("profiles")
@@ -381,6 +419,71 @@ class SupabaseService: ObservableObject {
             // Update local user
             var updatedUser = currentUser
             updatedUser.streak = newStreak
+            self.currentUser = updatedUser
+            
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            return false
+        }
+    }
+    
+    // MARK: - Journal Entry Sync
+    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
+        do {
+            // Convert dictionary to proper Codable struct
+            let journalEntry = JournalEntryPayload(
+                id: entryData["id"] as? String ?? UUID().uuidString,
+                user_id: entryData["user_id"] as? String ?? "",
+                date: entryData["date"] as? String ?? ISO8601DateFormatter.shared.string(from: Date()),
+                user_path: entryData["user_path"] as? String ?? "clarity",
+                title: entryData["title"] as? String,
+                content: entryData["content"] as? String ?? "",
+                mood: entryData["mood"] as? Int,
+                ai_summary: entryData["ai_summary"] as? String,
+                ai_reflection: entryData["ai_reflection"] as? String,
+                ai_insights: entryData["ai_insights"] as? String,
+                voice_note_url: entryData["voice_note_url"] as? String,
+                voice_transcript: entryData["voice_transcript"] as? String,
+                tags: entryData["tags"] as? String,
+                is_private: entryData["is_private"] as? Bool ?? false,
+                created_at: entryData["created_at"] as? String ?? ISO8601DateFormatter.shared.string(from: Date()),
+                updated_at: entryData["updated_at"] as? String ?? ISO8601DateFormatter.shared.string(from: Date())
+            )
+            
+            try await supabase
+                .from("journal_entries")
+                .upsert(journalEntry)
+                .execute()
+            
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            return false
+        }
+    }
+    
+    // MARK: - Update Journal Entry Count
+    func updateJournalEntryCount(_ newCount: Int) async -> Bool {
+        guard let currentUser = currentUser else { return false }
+        
+        let payload = JournalCountUpdatePayload(
+            total_journal_entries: newCount,
+            updated_at: ISO8601DateFormatter.shared.string(from: Date())
+        )
+        
+        do {
+            try await supabase
+                .from("profiles")
+                .update(payload)
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
+            
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.totalJournalEntries = newCount
             self.currentUser = updatedUser
             
             return true
@@ -518,37 +621,3 @@ enum AuthError: LocalizedError {
         }
     }
 }
-
-private struct JournalCountUpdatePayload: Codable {
-    let total_journal_entries: Int
-    let updated_at: String
-}
-// MARK: - Update Journal Entry Count
-func updateJournalEntryCount(_ newCount: Int) async -> Bool {
-    guard let currentUser = currentUser else { return false }
-    
-    let payload = JournalCountUpdatePayload(
-        total_journal_entries: newCount,
-        updated_at: ISO8601DateFormatter.shared.string(from: Date())
-    )
-    
-    do {
-        try await supabase
-            .from("profiles")
-            .update(payload)
-            .eq("id", value: currentUser.id.uuidString)
-            .execute()
-        
-        // Update local user
-        var updatedUser = currentUser
-        updatedUser.totalJournalEntries = newCount
-        self.currentUser = updatedUser
-        
-        return true
-        
-    } catch {
-        errorMessage = mapSupabaseError(error)
-        return false
-    }
-}
-
