@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreData
 
 @main
 struct ObexApp: App {
@@ -101,5 +102,19 @@ class PersistenceController {
                 fatalError("Save error: \(nsError), \(nsError.userInfo)")
             }
         }
+    }
+}
+
+struct MainTabView: View {
+    var body: some View {
+        Text("Testingggg")
+        
+    }
+}
+
+struct OnboardingFlow: View {
+    var body: some View {
+        Text("Testingggg again typ shi")
+        
     }
 }
