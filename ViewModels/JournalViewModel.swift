@@ -1,6 +1,12 @@
 import Foundation
 import CoreData
 import Combine
+import Supabase
+
+// MARK: - Date Formatter Extension
+extension ISO8601DateFormatter {
+    static let shared = ISO8601DateFormatter()
+}
 
     // MARK: - Journal Entry Data Model
 struct JournalEntryData: Identifiable, Hashable {
@@ -415,37 +421,31 @@ class JournalViewModel: ObservableObject {
     private func syncToSupabase(_ entry: JournalEntry) async {
         guard let currentUser = supabaseService.currentUser else { return }
         
-        do {
-            let entryData: [String: Any] = [
-                "id": entry.id?.uuidString ?? UUID().uuidString,
-                "user_id": currentUser.id.uuidString,
-                "date": ISO8601DateFormatter().string(from: entry.date ?? Date()),
-                "user_path": entry.userPath ?? "clarity",
-                "title": entry.title as Any,
-                "content": entry.content ?? "",
-                "mood": entry.mood != 0 ? Int(entry.mood) : NSNull(),
-                "ai_summary": entry.aiSummary as Any,
-                "ai_reflection": entry.aiReflection as Any,
-                "ai_insights": entry.aiInsights as Any,
-                "voice_note_url": entry.voiceNoteURL as Any,
-                "voice_transcript": entry.voiceTranscript as Any,
-                "tags": entry.tags as Any,
-                "is_private": entry.isPrivate,
-                "created_at": ISO8601DateFormatter().string(from: entry.createdAt ?? Date()),
-                "updated_at": ISO8601DateFormatter().string(from: entry.updatedAt ?? Date())
-            ]
-            
-            // Use upsert to handle both inserts and updates
-            try await supabaseService.supabase
-                .from("journal_entries")
-                .upsert(entryData)
-                .execute()
-            
+        let entryData: [String: Any] = [
+            "id": entry.id?.uuidString ?? UUID().uuidString,
+            "user_id": currentUser.id.uuidString,
+            "date": ISO8601DateFormatter.shared.string(from: entry.date ?? Date()),
+            "user_path": entry.userPath ?? "clarity",
+            "title": entry.title,
+            "content": entry.content ?? "",
+            "mood": entry.mood != 0 ? Int(entry.mood) : nil,
+            "ai_summary": entry.aiSummary,
+            "ai_reflection": entry.aiReflection,
+            "ai_insights": entry.aiInsights,
+            "voice_note_url": entry.voiceNoteURL,
+            "voice_transcript": entry.voiceTranscript,
+            "tags": entry.tags,
+            "is_private": entry.isPrivate,
+            "created_at": ISO8601DateFormatter.shared.string(from: entry.createdAt ?? Date()),
+            "updated_at": ISO8601DateFormatter.shared.string(from: entry.updatedAt ?? Date())
+        ]
+        
+        let success = await supabaseService.syncJournalEntry(entryData)
+        
+        if success {
             print("Successfully synced entry \(entry.id?.uuidString ?? "unknown") to Supabase")
-            
-        } catch {
-            print("Failed to sync entry to Supabase: \(error)")
-            // Could potentially add to a retry queue here
+        } else {
+            print("Failed to sync entry to Supabase")
             errorMessage = "Entry saved locally but cloud sync failed"
         }
     }
@@ -454,29 +454,9 @@ class JournalViewModel: ObservableObject {
     func uploadVoiceNote(_ audioData: Data, for entryId: UUID) async -> String? {
         guard let currentUser = supabaseService.currentUser else { return nil }
         
-        do {
-            let fileName = "\(currentUser.id.uuidString)/voice_notes/\(entryId.uuidString).m4a"
-            
-            // Upload to Supabase Storage
-            try await supabaseService.supabase.storage
-                .from("voice-notes")
-                .upload(path: fileName, file: audioData, options: FileOptions(
-                    cacheControl: "3600",
-                    contentType: "audio/m4a"
-                ))
-            
-            // Get public URL
-            let publicURL = try supabaseService.supabase.storage
-                .from("voice-notes")
-                .getPublicURL(path: fileName)
-            
-            return publicURL.absoluteString
-            
-        } catch {
-            print("Failed to upload voice note: \(error)")
-            errorMessage = "Failed to upload voice note"
-            return nil
-        }
+        let fileName = "\(currentUser.id.uuidString)/voice_notes/\(entryId.uuidString).m4a"
+        
+        return await supabaseService.uploadVoiceNote(audioData, fileName: fileName)
     }
     
     // MARK: - Batch Sync for Offline Entries
@@ -489,7 +469,7 @@ class JournalViewModel: ObservableObject {
             
             for entry in pendingEntries {
                 await syncToSupabase(entry)
-                // Mark as synced if successful
+                // Mark as synced if successful (you might want to check return value)
                 entry.syncStatus = "synced"
             }
             
