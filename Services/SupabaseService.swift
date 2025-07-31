@@ -523,24 +523,31 @@ private struct JournalCountUpdatePayload: Codable {
     let total_journal_entries: Int
     let updated_at: String
 }
-
+// MARK: - Update Journal Entry Count
 func updateJournalEntryCount(_ newCount: Int) async -> Bool {
     guard let currentUser = currentUser else { return false }
-
+    
     let payload = JournalCountUpdatePayload(
         total_journal_entries: newCount,
-        updated_at: ISO8601DateFormatter().string(from: Date())
+        updated_at: ISO8601DateFormatter.shared.string(from: Date())
     )
-
+    
     do {
         try await supabase
             .from("profiles")
             .update(payload)
-            .eq("id", currentUser.id.uuidString)
+            .eq("id", value: currentUser.id.uuidString)
             .execute()
+        
+        // Update local user
+        var updatedUser = currentUser
+        updatedUser.totalJournalEntries = newCount
+        self.currentUser = updatedUser
+        
         return true
+        
     } catch {
-        print("Failed to update journal entry count: \(error)")
+        errorMessage = mapSupabaseError(error)
         return false
     }
 }
