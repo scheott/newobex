@@ -38,6 +38,21 @@ struct UserProfile: Codable, Identifiable {
     }
 }
 
+extension UserProfile: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.email = try container.decode(String.self, forKey: .email)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.selectedPath = try container.decodeIfPresent(UserPath.self, forKey: .selectedPath)
+        self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        self.onboardingCompleted = try container.decode(Bool.self, forKey: .onboardingCompleted)
+        self.streak = try container.decode(Int.self, forKey: .streak)
+        self.totalJournalEntries = try container.decode(Int.self, forKey: .totalJournalEntries)
+    }
+}
+
+
 // MARK: - Database Profile Model (for Supabase table)
 private struct UserProfileDB: Codable {
     let id: UUID
