@@ -518,3 +518,30 @@ enum AuthError: LocalizedError {
         }
     }
 }
+
+private struct JournalCountUpdatePayload: Codable {
+    let total_journal_entries: Int
+    let updated_at: String
+}
+
+func updateJournalEntryCount(_ newCount: Int) async -> Bool {
+    guard let currentUser = currentUser else { return false }
+
+    let payload = JournalCountUpdatePayload(
+        total_journal_entries: newCount,
+        updated_at: ISO8601DateFormatter().string(from: Date())
+    )
+
+    do {
+        try await supabase
+            .from("profiles")
+            .update(payload)
+            .eq("id", currentUser.id.uuidString)
+            .execute()
+        return true
+    } catch {
+        print("Failed to update journal entry count: \(error)")
+        return false
+    }
+}
+
