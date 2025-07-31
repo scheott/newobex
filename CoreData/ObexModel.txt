@@ -1,0 +1,54 @@
+// Core Data Model Definition for ObexModel.xcdatamodeld
+// This represents the structure that should be created in Xcode's Core Data Model Editor
+
+/*
+Entity: JournalEntry
+Attributes:
+- id: UUID (required)
+- userId: UUID (required) - Links to Supabase user
+- date: Date (required) - When entry was created
+- userPath: String (required) - "confidence", "clarity", or "discipline"
+- title: String (optional) - User-defined title
+- content: String (required) - Main journal text
+- mood: Int16 (optional) - 1-10 scale
+- aiSummary: String (optional) - AI-generated insights
+- voiceNoteURL: String (optional) - Reference to audio file
+- voiceTranscript: String (optional) - Transcribed voice note
+- tags: String (optional) - Comma-separated tags
+- isPrivate: Boolean (default: false)
+- createdAt: Date (required)
+- updatedAt: Date (required)
+
+Entity: Challenge
+Attributes:
+- id: UUID (required)
+- userId: UUID (required)
+- userPath: String (required)
+- title: String (required)
+- description: String (optional)
+- difficulty: Int16 (required) - 1-5 scale
+- isCompleted: Boolean (default: false)
+- completedAt: Date (optional)
+- streakCount: Int32 (default: 0)
+- targetDays: Int32 (required)
+- createdAt: Date (required)
+
+Entity: PathProgress
+Attributes:
+- id: UUID (required)
+- userId: UUID (required)
+- userPath: String (required)
+- level: Int32 (default: 1)
+- experiencePoints: Int32 (default: 0)
+- currentStreak: Int32 (default: 0)
+- longestStreak: Int32 (default: 0)
+- totalSessions: Int32 (default: 0)
+- lastActivityDate: Date (optional)
+- createdAt: Date (required)
+- updatedAt: Date (required)
+
+Relationships:
+- JournalEntry -> PathProgress (many-to-one via userPath)
+- Challenge -> PathProgress (many-to-one via userPath)
+*/
+
