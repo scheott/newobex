@@ -1,5 +1,5 @@
-// Core Data Model Definition for ObexModel.xcdatamodeld
-// This represents the structure that should be created in Xcode's Core Data Model Editor
+// Updated Core Data Model Definition for ObexModel.xcdatamodeld
+// This represents the enhanced structure for the JournalEntry entity
 
 /*
 Entity: JournalEntry
@@ -10,12 +10,15 @@ Attributes:
 - userPath: String (required) - "confidence", "clarity", or "discipline"
 - title: String (optional) - User-defined title
 - content: String (required) - Main journal text
-- mood: Int16 (optional) - 1-10 scale
-- aiSummary: String (optional) - AI-generated insights
-- voiceNoteURL: String (optional) - Reference to audio file
+- mood: Int16 (optional) - 0-10 scale (0 = neutral, 1-10 = bad to excellent)
+- aiSummary: String (optional) - AI-generated summary
+- aiReflection: String (optional) - AI-generated reflection question
+- aiInsights: String (optional) - Pipe-separated AI insights
+- voiceNoteURL: String (optional) - Reference to audio file in Supabase Storage
 - voiceTranscript: String (optional) - Transcribed voice note
 - tags: String (optional) - Comma-separated tags
 - isPrivate: Boolean (default: false)
+- syncStatus: String (optional) - "pending", "synced", "failed" for cloud sync
 - createdAt: Date (required)
 - updatedAt: Date (required)
 
@@ -31,6 +34,7 @@ Attributes:
 - completedAt: Date (optional)
 - streakCount: Int32 (default: 0)
 - targetDays: Int32 (required)
+- syncStatus: String (optional) - For cloud sync
 - createdAt: Date (required)
 
 Entity: PathProgress
@@ -44,11 +48,64 @@ Attributes:
 - longestStreak: Int32 (default: 0)
 - totalSessions: Int32 (default: 0)
 - lastActivityDate: Date (optional)
+- syncStatus: String (optional) - For cloud sync
 - createdAt: Date (required)
 - updatedAt: Date (required)
 
 Relationships:
 - JournalEntry -> PathProgress (many-to-one via userPath)
 - Challenge -> PathProgress (many-to-one via userPath)
+
+Key Changes from Original:
+1. Added aiReflection field to store AI-generated reflection questions
+2. Added aiInsights field to store pipe-separated AI insights  
+3. Modified mood to allow 0 as neutral (not just 1-10)
+4. Added syncStatus field for offline/online sync management
+5. Enhanced voiceNoteURL to point to Supabase Storage URLs
 */
 
+// MARK: - Core Data Extensions
+extension JournalEntry {
+    
+    // Computed property for AI insights array
+    var aiInsightsArray: [String] {
+        get {
+            aiInsights?.components(separatedBy: "|").filter { !$0.isEmpty } ?? []
+        }
+        set {
+            aiInsights = newValue.joined(separator: "|")
+        }
+    }
+    
+    // Computed property for tags array
+    var tagsArray: [String] {
+        get {
+            tags?.components(separatedBy: ",").filter { !$0.isEmpty } ?? []
+        }
+        set {
+            tags = newValue.joined(separator: ",")
+        }
+    }
+    
+    // Helper for sync status
+    var isPendingSync: Bool {
+        syncStatus != "synced"
+    }
+    
+    // Helper for mood validation
+    var validMood: Int? {
+        mood >= 0 && mood <= 10 ? Int(mood) : nil
+    }
+}
+
+extension Challenge {
+    var isPendingSync: Bool {
+        syncStatus != "synced"
+    }
+}
+
+extension PathProgress {
+    var isPendingSync: Bool {
+        syncStatus != "synced"
+    }
+}
