@@ -1,9 +1,10 @@
 import Foundation
 import Combine
 import Supabase
+import Auth
 
 // MARK: - User Profile Model
-struct UserProfile: Codable, Identifiable {
+struct UserProfile: Identifiable {
     let id: UUID
     let email: String
     let createdAt: Date
@@ -24,7 +25,7 @@ struct UserProfile: Codable, Identifiable {
         case totalJournalEntries = "total_journal_entries"
     }
     
-    init(from supabaseUser: User, profile: UserProfileDB? = nil) {
+    fileprivate init(from supabaseUser: User, profile: UserProfileDB? = nil) {
         self.id = UUID(uuidString: supabaseUser.id.uuidString) ?? UUID()
         self.email = supabaseUser.email ?? ""
         self.createdAt = supabaseUser.createdAt
@@ -98,7 +99,7 @@ struct AuthSession: Codable {
     init(from supabaseSession: Session) {
         self.accessToken = supabaseSession.accessToken
         self.refreshToken = supabaseSession.refreshToken
-        self.expiresAt = supabaseSession.expiresAt
+        self.expiresAt = Date(timeIntervalSince1970: supabaseSession.expiresAt)
     }
 }
 
@@ -138,22 +139,22 @@ class SupabaseService: ObservableObject {
     // MARK: - Auth State Management
     private func setupAuthStateListener() {
         Task {
-            for await authState in supabase.auth.authStateChanges {
-                await handleAuthStateChange(authState)
+            for await (event, session) in supabase.auth.authStateChanges {
+                await handleAuthStateChange(event: event, session: session)
             }
         }
     }
     
-    private func handleAuthStateChange(_ authState: AuthState) async {
-        switch authState.event {
+    private func handleAuthStateChange(event: AuthChangeEvent, session: Session?) async {
+        switch event {
         case .signedIn:
-            if let session = authState.session {
+            if let session = session {
                 await handleSuccessfulAuth(session)
             }
         case .signedOut:
             await handleSignOut()
         case .tokenRefreshed:
-            if let session = authState.session {
+            if let session = session {
                 await updateSession(session)
             }
         default:
@@ -305,8 +306,8 @@ class SupabaseService: ObservableObject {
             try await supabase
                 .from("profiles")
                 .update([
-                    "onboarding_completed": true,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
+                    "onboarding_completed": AnyJSON.bool(true),
+                    "updated_at": AnyJSON.string(ISO8601DateFormatter().string(from: Date()))
                 ])
                 .eq("id", value: currentUser.id.uuidString)
                 .execute()
@@ -357,18 +358,23 @@ class SupabaseService: ObservableObject {
             return false
         }
     }
+    private struct StreakUpdatePayload: Codable {
+        let streak: Int
+        let updated_at: String
+    }
     
     // MARK: - Update Streak
     func updateStreak(_ newStreak: Int) async -> Bool {
         guard let currentUser = currentUser else { return false }
         
+        let payload = StreakUpdatePayload(
+            streak: newStreak,
+            updated_at: ISO8601DateFormatter().string(from: Date())
+        )
         do {
             try await supabase
                 .from("profiles")
-                .update([
-                    "streak": newStreak,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id.uuidString)
                 .execute()
             
