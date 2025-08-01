@@ -1,526 +1,555 @@
 import Foundation
-import CoreData
 import Combine
 import Supabase
+import Auth
 
-// MARK: - Date Formatter Extension
-extension ISO8601DateFormatter {
-    static let shared = ISO8601DateFormatter()
+// MARK: - User Profile Model
+struct UserProfile: Identifiable {
+    let id: UUID
+    let email: String
+    let createdAt: Date
+    var selectedPath: UserPath?
+    var displayName: String?
+    var onboardingCompleted: Bool
+    var streak: Int
+    var totalJournalEntries: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case email
+        case createdAt = "created_at"
+        case selectedPath = "selected_path"
+        case displayName = "display_name"
+        case onboardingCompleted = "onboarding_completed"
+        case streak
+        case totalJournalEntries = "total_journal_entries"
+    }
+    
+    fileprivate init(from supabaseUser: User, profile: UserProfileDB? = nil) {
+        self.id = UUID(uuidString: supabaseUser.id.uuidString) ?? UUID()
+        self.email = supabaseUser.email ?? ""
+        self.createdAt = supabaseUser.createdAt
+        
+        // Use profile data if available, otherwise defaults
+        self.selectedPath = profile?.selectedPath
+        self.displayName = profile?.displayName
+        self.onboardingCompleted = profile?.onboardingCompleted ?? false
+        self.streak = profile?.streak ?? 0
+        self.totalJournalEntries = profile?.totalJournalEntries ?? 0
+    }
 }
 
-    // MARK: - Journal Entry Data Model
-struct JournalEntryData: Identifiable, Hashable {
+extension UserProfile: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.email = try container.decode(String.self, forKey: .email)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.selectedPath = try container.decodeIfPresent(UserPath.self, forKey: .selectedPath)
+        self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        self.onboardingCompleted = try container.decode(Bool.self, forKey: .onboardingCompleted)
+        self.streak = try container.decode(Int.self, forKey: .streak)
+        self.totalJournalEntries = try container.decode(Int.self, forKey: .totalJournalEntries)
+    }
+}
+
+
+// MARK: - Database Profile Model (for Supabase table)
+private struct UserProfileDB: Codable {
     let id: UUID
-    let userId: UUID
-    let date: Date
-    let userPath: UserPath
-    let title: String?
-    let content: String
-    let mood: Int?
-    let aiSummary: String?
-    let aiReflection: String?
-    let aiInsights: [String]
-    let voiceNoteURL: String?
-    let voiceTranscript: String?
-    let tags: [String]
-    let isPrivate: Bool
+    let email: String
+    let selectedPath: UserPath?
+    let displayName: String?
+    let onboardingCompleted: Bool
+    let streak: Int
+    let totalJournalEntries: Int
     let createdAt: Date
     let updatedAt: Date
     
-    // Helper computed properties
-    var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
-    }
-    
-    var shortDate: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d"
-        return formatter.string(from: date)
-    }
-    
-    var timeAgo: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: createdAt, relativeTo: Date())
-    }
-    
-    var wordCount: Int {
-        content.components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }.count
-    }
-    
-    var readingTime: String {
-        let wordsPerMinute = 200
-        let minutes = max(1, wordCount / wordsPerMinute)
-        return "\(minutes) min read"
+    enum CodingKeys: String, CodingKey {
+        case id
+        case email
+        case selectedPath = "selected_path"
+        case displayName = "display_name"
+        case onboardingCompleted = "onboarding_completed"
+        case streak
+        case totalJournalEntries = "total_journal_entries"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
     }
 }
 
-// MARK: - Journal View Model
-@MainActor
-class JournalViewModel: ObservableObject {
+// MARK: - Authentication Result
+struct AuthResult {
+    let user: UserProfile
+    let session: AuthSession
+}
+
+struct AuthSession: Codable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAt: Date
     
-    // MARK: - Published Properties
-    @Published var entries: [JournalEntryData] = []
-    @Published var filteredEntries: [JournalEntryData] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
-    @Published var selectedPath: UserPath?
-    @Published var searchText = ""
-    @Published var isCreatingEntry = false
-    @Published var selectedEntry: JournalEntryData?
-    @Published var showErrorAlert = false
-    
-    // MARK: - AI Analysis Properties
-    @Published var isAnalyzing = false
-    @Published var aiInsights: JournalAIResponse?
-    
-    // MARK: - Filter Properties
-    @Published var showPrivateOnly = false
-    @Published var selectedMoodRange: ClosedRange<Int>?
-    @Published var selectedTags: Set<String> = []
-    
-    // MARK: - Dependencies
-    private let context: NSManagedObjectContext
-    private let aiService = JournalAIService.shared
-    private let supabaseService: SupabaseService
-    private var cancellables = Set<AnyCancellable>()
-    
-    // MARK: - Computed Properties
-    var availableTags: [String] {
-        Array(Set(entries.flatMap { $0.tags })).sorted()
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
     }
     
-    var entriesByDate: [Date: [JournalEntryData]] {
-        Dictionary(grouping: filteredEntries) { entry in
-            Calendar.current.startOfDay(for: entry.date)
+    init(from supabaseSession: Session) {
+        self.accessToken = supabaseSession.accessToken
+        self.refreshToken = supabaseSession.refreshToken
+        self.expiresAt = Date(timeIntervalSince1970: supabaseSession.expiresAt)
+    }
+}
+
+// MARK: - Supabase Service
+@MainActor
+class SupabaseService: ObservableObject {
+    
+    // MARK: - Published Properties
+    @Published var isAuthenticated = false
+    @Published var isLoading = false
+    @Published var currentUser: UserProfile?
+    @Published var errorMessage: String?
+    
+    // MARK: - Private Properties
+    private var authSession: AuthSession?
+    private let supabase: SupabaseClient
+    
+    // MARK: - Configuration
+    private let baseURL = "https://your-project.supabase.co" // Replace with your Supabase URL
+    private let apiKey = "your-anon-key" // Replace with your anon key
+    
+    // MARK: - Initialization
+    init() {
+        // Initialize Supabase client
+        self.supabase = SupabaseClient(
+            supabaseURL: URL(string: baseURL)!,
+            supabaseKey: apiKey
+        )
+        
+        // Set up auth state listener
+        setupAuthStateListener()
+        
+        // Check initial auth state
+        checkAuthenticationState()
+    }
+    
+    // MARK: - Auth State Management
+    private func setupAuthStateListener() {
+        Task {
+            for await (event, session) in supabase.auth.authStateChanges {
+                await handleAuthStateChange(event: event, session: session)
+            }
         }
     }
     
-    var totalWordCount: Int {
-        entries.reduce(0) { $0 + $1.wordCount }
-    }
-    
-    var currentStreak: Int {
-        calculateCurrentStreak()
-    }
-    
-    // MARK: - Initialization
-    init(context: NSManagedObjectContext, supabaseService: SupabaseService) {
-        self.context = context
-        self.supabaseService = supabaseService
-        
-        setupSubscriptions()
-        loadEntries()
-    }
-    
-    // MARK: - Setup
-    private func setupSubscriptions() {
-        // Filter entries based on search text and filters
-        Publishers.CombineLatest4($entries, $searchText, $selectedPath, $showPrivateOnly)
-            .map { entries, searchText, selectedPath, showPrivateOnly in
-                self.filterEntries(entries, searchText: searchText, path: selectedPath, privateOnly: showPrivateOnly)
+    private func handleAuthStateChange(event: AuthChangeEvent, session: Session?) async {
+        switch event {
+        case .signedIn:
+            if let session = session {
+                await handleSuccessfulAuth(session)
             }
-            .assign(to: &$filteredEntries)
-        
-        // Listen for user path changes
-        supabaseService.$currentUser
-            .compactMap { $0?.selectedPath }
-            .sink { [weak self] path in
-                self?.selectedPath = path
+        case .signedOut:
+            await handleSignOut()
+        case .tokenRefreshed:
+            if let session = session {
+                await updateSession(session)
             }
-            .store(in: &cancellables)
+        default:
+            break
+        }
     }
     
-    // MARK: - Core Data Operations
-    func loadEntries() {
-        guard let currentUser = supabaseService.currentUser else { return }
+    private func checkAuthenticationState() {
+        // Check for stored session
+        if let sessionData = UserDefaults.standard.data(forKey: "obex_auth_session"),
+           let session = try? JSONDecoder().decode(AuthSession.self, from: sessionData),
+           session.expiresAt > Date() {
+            
+            self.authSession = session
+            self.isAuthenticated = true
+            
+            // Load user profile
+            Task {
+                await loadUserProfile()
+            }
+        }
+    }
+    
+    // MARK: - Sign Up
+    func signUp(email: String, password: String) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+        
+        do {
+            // Create auth user
+            let authResponse = try await supabase.auth.signUp(
+                email: email,
+                password: password
+            )
+            
+            guard let session = authResponse.session else {
+                throw AuthError.registrationFailed
+            }
+            
+            // Create user profile in database
+            let profileData = UserProfileDB(
+                id: UUID(uuidString: authResponse.user.id.uuidString) ?? UUID(),
+                email: email,
+                selectedPath: nil,
+                displayName: nil,
+                onboardingCompleted: false,
+                streak: 0,
+                totalJournalEntries: 0,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+            
+            try await supabase
+                .from("profiles")
+                .insert(profileData)
+                .execute()
+            
+            // Handle successful auth
+            await handleSuccessfulAuth(session)
+            
+            isLoading = false
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
+            return false
+        }
+    }
+    
+    // MARK: - Sign In
+    func signIn(email: String, password: String) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+        
+        do {
+            let session = try await supabase.auth.signIn(
+                email: email,
+                password: password
+            )
+            
+            await handleSuccessfulAuth(session)
+            
+            isLoading = false
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
+            return false
+        }
+    }
+    
+    // MARK: - Sign Out
+    func signOut() async {
+        isLoading = true
+        
+        do {
+            try await supabase.auth.signOut()
+            await handleSignOut()
+        } catch {
+            // Even if remote signout fails, clear local state
+            await handleSignOut()
+        }
+        
+        isLoading = false
+    }
+    
+    // MARK: - Update User Path
+    func updateUserPath(_ path: UserPath) async -> Bool {
+        guard let currentUser = currentUser else { return false }
         
         isLoading = true
         errorMessage = nil
         
-        let request: NSFetchRequest<JournalEntry> = JournalEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "userId == %@", currentUser.id as CVarArg)
-        request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: false)]
-        
         do {
-            let coreDataEntries = try context.fetch(request)
-            self.entries = coreDataEntries.map { convertToJournalEntryData($0) }
+            try await supabase
+                .from("profiles")
+                .update([
+                    "selected_path": path.rawValue,
+                    "updated_at": ISO8601DateFormatter().string(from: Date())
+                ])
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
+            
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.selectedPath = path
+            self.currentUser = updatedUser
+            
             isLoading = false
+            return true
+            
         } catch {
-            errorMessage = "Failed to load journal entries: \(error.localizedDescription)"
+            errorMessage = mapSupabaseError(error)
             isLoading = false
+            return false
         }
     }
     
-    func createEntry(
-        title: String?,
-        content: String,
-        userPath: UserPath,
-        mood: Int? = nil,
-        tags: [String] = [],
-        isPrivate: Bool = false,
-        withAIAnalysis: Bool = true
-    ) async -> Bool {
-        guard let currentUser = supabaseService.currentUser else { return false }
+    // MARK: - Complete Onboarding
+    func completeOnboarding() async -> Bool {
+        guard let currentUser = currentUser else { return false }
         
-        isCreatingEntry = true
+        isLoading = true
         errorMessage = nil
         
         do {
-            // Create Core Data entity
-            let newEntry = JournalEntry(context: context)
-            newEntry.id = UUID()
-            newEntry.userId = currentUser.id
-            newEntry.date = Date()
-            newEntry.userPath = userPath.rawValue
-            newEntry.title = title
-            newEntry.content = content
-            newEntry.mood = Int16(mood ?? 0)
-            newEntry.tags = tags.joined(separator: ",")
-            newEntry.isPrivate = isPrivate
-            newEntry.createdAt = Date()
-            newEntry.updatedAt = Date()
+            try await supabase
+                .from("profiles")
+                .update([
+                    "onboarding_completed": AnyJSON.bool(true),
+                    "updated_at": AnyJSON.string(ISO8601DateFormatter().string(from: Date()))
+                ])
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
             
-            // Generate AI analysis if requested
-            if withAIAnalysis {
-                isAnalyzing = true
-                
-                let aiRequest = JournalAIRequest(
-                    content: content,
-                    userPath: userPath,
-                    previousEntries: getRecentEntryContents(limit: 3),
-                    mood: mood
-                )
-                
-                do {
-                    let aiResponse = try await aiService.analyzeJournalEntry(aiRequest)
-                    
-                    // Save AI analysis to Core Data
-                    newEntry.aiSummary = aiResponse.summary
-                    newEntry.aiReflection = aiResponse.reflection
-                    newEntry.aiInsights = aiResponse.insights.joined(separator: "|")
-                    
-                    // Update mood if AI provided a better estimate
-                    if mood == nil, let aiMood = aiResponse.mood {
-                        newEntry.mood = Int16(aiMood)
-                    }
-                    
-                    // Merge AI suggested tags with user tags
-                    let allTags = Set(tags + aiResponse.suggestedTags)
-                    newEntry.tags = Array(allTags).joined(separator: ",")
-                    
-                    self.aiInsights = aiResponse
-                } catch {
-                    // AI analysis failed, but we'll still save the entry
-                    errorMessage = "Entry saved, but AI analysis failed: \(error.localizedDescription)"
-                    print("AI analysis failed: \(error)")
-                }
-                
-                isAnalyzing = false
-            }
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.onboardingCompleted = true
+            self.currentUser = updatedUser
             
-            // Save to Core Data
-            try context.save()
-            
-            // Update Supabase (fire and forget)
-            Task {
-                await syncToSupabase(newEntry)
-            }
-            
-            // Reload entries to update UI
-            loadEntries()
-            
-            // Update user's total journal entries count
-            Task {
-                let newCount = currentUser.totalJournalEntries + 1
-                _ = await supabaseService.updateJournalEntryCount(newCount)
-            }
-            
-            isCreatingEntry = false
+            isLoading = false
             return true
             
         } catch {
-            errorMessage = "Failed to create journal entry: \(error.localizedDescription)"
-            showErrorAlert = true
-            isCreatingEntry = false
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
             return false
         }
     }
     
-    func updateEntry(_ entryData: JournalEntryData, title: String?, content: String, tags: [String], isPrivate: Bool) async -> Bool {
-        let request: NSFetchRequest<JournalEntry> = JournalEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", entryData.id as CVarArg)
+    // MARK: - Update Display Name
+    func updateDisplayName(_ displayName: String) async -> Bool {
+        guard let currentUser = currentUser else { return false }
+        
+        isLoading = true
+        errorMessage = nil
         
         do {
-            let results = try context.fetch(request)
-            guard let entry = results.first else { return false }
+            try await supabase
+                .from("profiles")
+                .update([
+                    "display_name": displayName,
+                    "updated_at": ISO8601DateFormatter().string(from: Date())
+                ])
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
             
-            entry.title = title
-            entry.content = content
-            entry.tags = tags.joined(separator: ",")
-            entry.isPrivate = isPrivate
-            entry.updatedAt = Date()
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.displayName = displayName
+            self.currentUser = updatedUser
             
-            try context.save()
-            
-            // Sync to Supabase
-            Task {
-                await syncToSupabase(entry)
-            }
-            
-            loadEntries()
+            isLoading = false
             return true
             
         } catch {
-            errorMessage = "Failed to update entry: \(error.localizedDescription)"
-            showErrorAlert = true
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
             return false
         }
     }
-    
-    func deleteEntry(_ entryData: JournalEntryData) async -> Bool {
-        let request: NSFetchRequest<JournalEntry> = JournalEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", entryData.id as CVarArg)
-        
-        do {
-            let results = try context.fetch(request)
-            guard let entry = results.first else { return false }
-            
-            context.delete(entry)
-            try context.save()
-            
-            // Update user's total journal entries count
-            if let currentUser = supabaseService.currentUser {
-                Task {
-                    let newCount = max(0, currentUser.totalJournalEntries - 1)
-                    _ = await supabaseService.updateJournalEntryCount(newCount)
-                }
-            }
-            
-            loadEntries()
-            return true
-            
-        } catch {
-            errorMessage = "Failed to delete entry: \(error.localizedDescription)"
-            showErrorAlert = true
-            return false
-        }
+    private struct JournalCountUpdatePayload: Codable {
+        let total_journal_entries: Int
+        let updated_at: String
     }
-    
-    // MARK: - AI Operations
-    func generateReflection(for content: String, userPath: UserPath) async -> String? {
-        do {
-            return try await aiService.generateQuickReflection(content: content, userPath: userPath)
-        } catch {
-            errorMessage = "Failed to generate reflection: \(error.localizedDescription)"
-            return nil
-        }
-    }
-    
-    func analyzeMood(for content: String) async -> Int? {
-        do {
-            return try await aiService.analyzeMood(content: content)
-        } catch {
-            return nil
-        }
-    }
-    
-    // MARK: - Filtering and Search
-    private func filterEntries(
-        _ entries: [JournalEntryData],
-        searchText: String,
-        path: UserPath?,
-        privateOnly: Bool
-    ) -> [JournalEntryData] {
-        var filtered = entries
+    // MARK: - Update Journal Entry Count
+    func updateJournalEntryCount(_ newCount: Int) async -> Bool {
+        guard let currentUser = currentUser else { return false }
         
-        // Filter by path
-        if let path = path {
-            filtered = filtered.filter { $0.userPath == path }
-        }
-        
-        // Filter by privacy
-        if privateOnly {
-            filtered = filtered.filter { $0.isPrivate }
-        }
-        
-        // Filter by search text
-        if !searchText.isEmpty {
-            filtered = filtered.filter { entry in
-                entry.title?.localizedCaseInsensitiveContains(searchText) == true ||
-                entry.content.localizedCaseInsensitiveContains(searchText) ||
-                entry.tags.contains { $0.localizedCaseInsensitiveContains(searchText) }
-            }
-        }
-        
-        // Filter by selected tags
-        if !selectedTags.isEmpty {
-            filtered = filtered.filter { entry in
-                !Set(entry.tags).isDisjoint(with: selectedTags)
-            }
-        }
-        
-        // Filter by mood range
-        if let moodRange = selectedMoodRange {
-            filtered = filtered.filter { entry in
-                guard let mood = entry.mood else { return false }
-                return moodRange.contains(mood)
-            }
-        }
-        
-        return filtered
-    }
-    
-    // MARK: - Helper Methods
-    private func convertToJournalEntryData(_ entry: JournalEntry) -> JournalEntryData {
-        JournalEntryData(
-            id: entry.id ?? UUID(),
-            userId: entry.userId ?? UUID(),
-            date: entry.date ?? Date(),
-            userPath: UserPath(rawValue: entry.userPath ?? "") ?? .clarity,
-            title: entry.title,
-            content: entry.content ?? "",
-            mood: entry.mood != 0 ? Int(entry.mood) : nil,
-            aiSummary: entry.aiSummary,
-            aiReflection: entry.aiReflection,
-            aiInsights: entry.aiInsights?.components(separatedBy: "|").filter { !$0.isEmpty } ?? [],
-            voiceNoteURL: entry.voiceNoteURL,
-            voiceTranscript: entry.voiceTranscript,
-            tags: entry.tags?.components(separatedBy: ",").filter { !$0.isEmpty } ?? [],
-            isPrivate: entry.isPrivate,
-            createdAt: entry.createdAt ?? Date(),
-            updatedAt: entry.updatedAt ?? Date()
+        let payload = JournalCountUpdatePayload(
+            total_journal_entries: newCount,
+            updated_at: ISO8601DateFormatter().string(from: Date())
         )
-    }
-    
-    private func getRecentEntryContents(limit: Int) -> [String] {
-        entries.prefix(limit).map { $0.content }
-    }
-    
-    private func calculateCurrentStreak() -> Int {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        var streak = 0
-        var currentDate = today
-        
-        let entriesByDate = Dictionary(grouping: entries) { entry in
-            calendar.startOfDay(for: entry.date)
-        }
-        
-        while entriesByDate[currentDate] != nil {
-            streak += 1
-            currentDate = calendar.date(byAdding: .day, value: -1, to: currentDate) ?? currentDate
-        }
-        
-        return streak
-    }
-    
-    private func syncToSupabase(_ entry: JournalEntry) async {
-        guard let currentUser = supabaseService.currentUser else { return }
-        
-        let entryData: [String: Any] = [
-            "id": entry.id?.uuidString ?? UUID().uuidString,
-            "user_id": currentUser.id.uuidString,
-            "date": ISO8601DateFormatter.shared.string(from: entry.date ?? Date()),
-            "user_path": entry.userPath ?? "clarity",
-            "title": entry.title,
-            "content": entry.content ?? "",
-            "mood": entry.mood != 0 ? Int(entry.mood) : nil,
-            "ai_summary": entry.aiSummary,
-            "ai_reflection": entry.aiReflection,
-            "ai_insights": entry.aiInsights,
-            "voice_note_url": entry.voiceNoteURL,
-            "voice_transcript": entry.voiceTranscript,
-            "tags": entry.tags,
-            "is_private": entry.isPrivate,
-            "created_at": ISO8601DateFormatter.shared.string(from: entry.createdAt ?? Date()),
-            "updated_at": ISO8601DateFormatter.shared.string(from: entry.updatedAt ?? Date())
-        ]
-        
-        let success = await supabaseService.syncJournalEntry(entryData)
-        
-        if success {
-            print("Successfully synced entry \(entry.id?.uuidString ?? "unknown") to Supabase")
-        } else {
-            print("Failed to sync entry to Supabase")
-            errorMessage = "Entry saved locally but cloud sync failed"
-        }
-    }
-    
-    // MARK: - Voice Note Upload
-    func uploadVoiceNote(_ audioData: Data, for entryId: UUID) async -> String? {
-        guard let currentUser = supabaseService.currentUser else { return nil }
-        
-        let fileName = "\(currentUser.id.uuidString)/voice_notes/\(entryId.uuidString).m4a"
-        
-        return await supabaseService.uploadVoiceNote(audioData, fileName: fileName)
-    }
-    
-    // MARK: - Batch Sync for Offline Entries
-    func syncPendingEntries() async {
-        let request: NSFetchRequest<JournalEntry> = JournalEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "syncStatus != %@", "synced")
         
         do {
-            let pendingEntries = try context.fetch(request)
+            try await supabase
+                .from("profiles")
+                .update(payload)
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
             
-            for entry in pendingEntries {
-                await syncToSupabase(entry)
-                // Mark as synced if successful (you might want to check return value)
-                entry.syncStatus = "synced"
-            }
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.totalJournalEntries = newCount
+            self.currentUser = updatedUser
             
-            try context.save()
+            return true
             
         } catch {
-            print("Failed to sync pending entries: \(error)")
+            errorMessage = mapSupabaseError(error)
+            return false
         }
     }
     
-    // MARK: - Public Interface Methods
-    func refreshEntries() {
-        loadEntries()
+    private struct StreakUpdatePayload: Codable {
+        let streak: Int
+        let updated_at: String
     }
     
-    func clearFilters() {
-        searchText = ""
-        selectedPath = nil
-        showPrivateOnly = false
-        selectedTags.removeAll()
-        selectedMoodRange = nil
-    }
-    
-    func exportEntries() -> String {
-        let sortedEntries = entries.sorted { $0.createdAt < $1.createdAt }
+    // MARK: - Update Streak
+    func updateStreak(_ newStreak: Int) async -> Bool {
+        guard let currentUser = currentUser else { return false }
         
-        var exportString = "Obex Journal Export\n"
-        exportString += "Generated: \(Date().formatted())\n"
-        exportString += "Total Entries: \(entries.count)\n"
-        exportString += "Total Words: \(totalWordCount)\n\n"
-        
-        for entry in sortedEntries {
-            exportString += "---\n"
-            exportString += "Date: \(entry.formattedDate)\n"
-            exportString += "Path: \(entry.userPath.displayName)\n"
-            if let title = entry.title {
-                exportString += "Title: \(title)\n"
-            }
-            if let mood = entry.mood {
-                exportString += "Mood: \(mood)/10\n"
-            }
-            if !entry.tags.isEmpty {
-                exportString += "Tags: \(entry.tags.joined(separator: ", "))\n"
-            }
-            exportString += "\n\(entry.content)\n\n"
+        let payload = StreakUpdatePayload(
+            streak: newStreak,
+            updated_at: ISO8601DateFormatter().string(from: Date())
+        )
+        do {
+            try await supabase
+                .from("profiles")
+                .update(payload)
+                .eq("id", value: currentUser.id.uuidString)
+                .execute()
             
-            if let aiSummary = entry.aiSummary {
-                exportString += "AI Summary: \(aiSummary)\n\n"
-            }
+            // Update local user
+            var updatedUser = currentUser
+            updatedUser.streak = newStreak
+            self.currentUser = updatedUser
+            
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            return false
+        }
+    }
+    
+    // MARK: - Private Helper Methods
+    private func handleSuccessfulAuth(_ session: Session) async {
+        let authSession = AuthSession(from: session)
+        
+        // Store session
+        storeAuthSession(authSession)
+        
+        // Update state
+        self.authSession = authSession
+        self.isAuthenticated = true
+        
+        // Load user profile
+        await loadUserProfile()
+    }
+    
+    private func handleSignOut() async {
+        // Clear stored session
+        UserDefaults.standard.removeObject(forKey: "obex_auth_session")
+        
+        // Clear state
+        self.authSession = nil
+        self.currentUser = nil
+        self.isAuthenticated = false
+        self.errorMessage = nil
+    }
+    
+    private func updateSession(_ session: Session) async {
+        let authSession = AuthSession(from: session)
+        storeAuthSession(authSession)
+        self.authSession = authSession
+    }
+    
+    private func loadUserProfile() async {
+        guard let session = authSession else { return }
+        
+        do {
+            // Get current user from auth
+            let user = try await supabase.auth.user()
+            
+            // Get user profile from database
+            let profileResponse: [UserProfileDB] = try await supabase
+                .from("profiles")
+                .select()
+                .eq("id", value: user.id.uuidString)
+                .execute()
+                .value
+            
+            let profile = profileResponse.first
+            let userProfile = UserProfile(from: user, profile: profile)
+            
+            self.currentUser = userProfile
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            // If profile load fails, sign out
+            await signOut()
+        }
+    }
+    
+    private func storeAuthSession(_ session: AuthSession) {
+        do {
+            let data = try JSONEncoder().encode(session)
+            UserDefaults.standard.set(data, forKey: "obex_auth_session")
+        } catch {
+            print("Failed to store auth session: \(error)")
+        }
+    }
+    
+    private func mapSupabaseError(_ error: Error) -> String {
+        // Map Supabase-specific errors to user-friendly messages
+        if let authError = error as? AuthError {
+            return authError.localizedDescription
         }
         
-        return exportString
+        let errorString = error.localizedDescription.lowercased()
+        
+        if errorString.contains("invalid login credentials") {
+            return "Invalid email or password"
+        } else if errorString.contains("email not confirmed") {
+            return "Please check your email and confirm your account"
+        } else if errorString.contains("user already registered") {
+            return "An account with this email already exists"
+        } else if errorString.contains("weak password") {
+            return "Password must be at least 6 characters"
+        } else if errorString.contains("network") || errorString.contains("connection") {
+            return "Network connection error. Please try again."
+        } else {
+            return "Something went wrong. Please try again."
+        }
     }
 }
+
+// MARK: - Authentication Errors
+enum AuthError: LocalizedError {
+    case invalidCredentials
+    case networkError
+    case userNotFound
+    case weakPassword
+    case emailAlreadyExists
+    case emailNotConfirmed
+    case sessionExpired
+    case registrationFailed
+    case unknown(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .invalidCredentials:
+            return "Invalid email or password"
+        case .networkError:
+            return "Network connection error"
+        case .userNotFound:
+            return "User not found"
+        case .weakPassword:
+            return "Password must be at least 6 characters"
+        case .emailAlreadyExists:
+            return "Email already registered"
+        case .emailNotConfirmed:
+            return "Please check your email and confirm your account"
+        case .sessionExpired:
+            return "Session expired. Please sign in again"
+        case .registrationFailed:
+            return "Registration failed. Please try again."
+        case .unknown(let message):
+            return message
+        }
+    }
+}
+
+
