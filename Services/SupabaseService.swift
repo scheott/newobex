@@ -3,6 +3,27 @@ import Combine
 import Supabase
 import Auth
 
+
+private struct JournalEntryPayload: Codable {
+    let id: String
+    let user_id: String
+    let date: String
+    let user_path: String
+    let title: String?
+    let content: String
+    let mood: Int?
+    let ai_summary: String?
+    let ai_reflection: String?
+    let ai_insights: String?
+    let voice_note_url: String?
+    let voice_transcript: String?
+    let tags: String?
+    let is_private: Bool
+    let created_at: String
+    let updated_at: String
+}
+
+
 // MARK: - User Profile Model
 struct UserProfile: Identifiable {
     let id: UUID
@@ -135,6 +156,7 @@ class SupabaseService: ObservableObject {
         // Check initial auth state
         checkAuthenticationState()
     }
+
     
     // MARK: - Auth State Management
     private func setupAuthStateListener() {
@@ -161,7 +183,70 @@ class SupabaseService: ObservableObject {
             break
         }
     }
+    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
+        guard let id = entryData["id"] as? String,
+              let userId = entryData["user_id"] as? String,
+              let date = entryData["date"] as? String,
+              let userPath = entryData["user_path"] as? String,
+              let content = entryData["content"] as? String,
+              let createdAt = entryData["created_at"] as? String,
+              let updatedAt = entryData["updated_at"] as? String else {
+            print("Invalid entry data")
+            return false
+        }
     
+        let payload = JournalEntryPayload(
+            id: id,
+            user_id: userId,
+            date: date,
+            user_path: userPath,
+            title: entryData["title"] as? String,
+            content: content,
+            mood: entryData["mood"] as? Int,
+            ai_summary: entryData["ai_summary"] as? String,
+            ai_reflection: entryData["ai_reflection"] as? String,
+            ai_insights: entryData["ai_insights"] as? String,
+            voice_note_url: entryData["voice_note_url"] as? String,
+            voice_transcript: entryData["voice_transcript"] as? String,
+            tags: entryData["tags"] as? String,
+            is_private: entryData["is_private"] as? Bool ?? false,
+            created_at: createdAt,
+            updated_at: updatedAt
+        )
+    
+        do {
+            try await supabase
+                .from("journal_entries")
+                .upsert(payload)
+                .execute()
+            return true
+        } catch {
+            print("Failed to sync journal entry: \(error)")
+            return false
+        }
+    }
+
+    func uploadVoiceNote(_ audioData: Data, fileName: String) async -> String? {
+        do {
+            try await supabase.storage
+                .from("voice-notes")
+                .upload(path: fileName, file: audioData, options: FileOptions(
+                    cacheControl: "3600",
+                    contentType: "audio/m4a"
+                ))
+    
+            let publicURL = try supabase.storage
+                .from("voice-notes")
+                .getPublicURL(path: fileName)
+    
+            return publicURL.absoluteString
+    
+        } catch {
+            print("Voice note upload failed: \(error)")
+            return nil
+        }
+    }
+
     private func checkAuthenticationState() {
         // Check for stored session
         if let sessionData = UserDefaults.standard.data(forKey: "obex_auth_session"),
