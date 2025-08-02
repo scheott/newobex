@@ -2,18 +2,17 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject private var supabaseService: SupabaseService
+    @Environment(\.managedObjectContext) private var viewContext
     @State private var selectedTab: Tab = .journal
-    // TODO: Consider dynamic launch tab based on deep links or user preferences
     
-    // Get user's selected path for theming
     private var userPath: UserPath {
         supabaseService.currentUser?.selectedPath ?? .confidence
     }
-    
+
     var body: some View {
         TabView(selection: $selectedTab) {
-            // Journal Tab
-            JournalView()
+            // ✅ FIXED Journal Tab
+            JournalView(context: viewContext, supabaseService: supabaseService)
                 .tabItem {
                     Image(systemName: selectedTab == .journal ? "book.fill" : "book")
                     Text("Journal")
