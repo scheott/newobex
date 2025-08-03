@@ -34,13 +34,21 @@ struct OnboardingFlow: View {
                     )
                     
                 case .nameInput:
-                    NameInputView(
-                        displayName: $displayName,
-                        selectedPath: selectedPath!,
-                        isLoading: $isLoading,
-                        onComplete: completeOnboarding
-                    )
-                }
+                    if let path = selectedPath {
+                        NameInputView(
+                            displayName: $displayName,
+                            selectedPath: path,
+                            isLoading: $isLoading,
+                            onComplete: completeOnboarding
+                        )
+                    } else {
+                        VStack {
+                            Text("Error: Path not selected.")
+                                .foregroundColor(.red)
+                                .font(.caption)
+                        }
+                    }
+
             }
         }
         .animation(.spring(response: 0.8, dampingFraction: 0.8), value: currentStep)
