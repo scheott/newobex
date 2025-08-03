@@ -1,31 +1,9 @@
 import Foundation
 import Combine
 import Supabase
-import Auth
-
-
-private struct JournalEntryPayload: Codable {
-    let id: String
-    let user_id: String
-    let date: String
-    let user_path: String
-    let title: String?
-    let content: String
-    let mood: Int?
-    let ai_summary: String?
-    let ai_reflection: String?
-    let ai_insights: String?
-    let voice_note_url: String?
-    let voice_transcript: String?
-    let tags: String?
-    let is_private: Bool
-    let created_at: String
-    let updated_at: String
-}
-
 
 // MARK: - User Profile Model
-struct UserProfile: Identifiable {
+struct UserProfile: Codable, Identifiable {
     let id: UUID
     let email: String
     let createdAt: Date
@@ -34,6 +12,7 @@ struct UserProfile: Identifiable {
     var onboardingCompleted: Bool
     var streak: Int
     var totalJournalEntries: Int
+    var updatedAt: Date?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -44,83 +23,7 @@ struct UserProfile: Identifiable {
         case onboardingCompleted = "onboarding_completed"
         case streak
         case totalJournalEntries = "total_journal_entries"
-    }
-    
-    fileprivate init(from supabaseUser: User, profile: UserProfileDB? = nil) {
-        self.id = UUID(uuidString: supabaseUser.id.uuidString) ?? UUID()
-        self.email = supabaseUser.email ?? ""
-        self.createdAt = supabaseUser.createdAt
-        
-        // Use profile data if available, otherwise defaults
-        self.selectedPath = profile?.selectedPath
-        self.displayName = profile?.displayName
-        self.onboardingCompleted = profile?.onboardingCompleted ?? false
-        self.streak = profile?.streak ?? 0
-        self.totalJournalEntries = profile?.totalJournalEntries ?? 0
-    }
-}
-
-extension UserProfile: Decodable {
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decode(UUID.self, forKey: .id)
-        self.email = try container.decode(String.self, forKey: .email)
-        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
-        self.selectedPath = try container.decodeIfPresent(UserPath.self, forKey: .selectedPath)
-        self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
-        self.onboardingCompleted = try container.decode(Bool.self, forKey: .onboardingCompleted)
-        self.streak = try container.decode(Int.self, forKey: .streak)
-        self.totalJournalEntries = try container.decode(Int.self, forKey: .totalJournalEntries)
-    }
-}
-
-
-// MARK: - Database Profile Model (for Supabase table)
-private struct UserProfileDB: Codable {
-    let id: UUID
-    let email: String
-    let selectedPath: UserPath?
-    let displayName: String?
-    let onboardingCompleted: Bool
-    let streak: Int
-    let totalJournalEntries: Int
-    let createdAt: Date
-    let updatedAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case id
-        case email
-        case selectedPath = "selected_path"
-        case displayName = "display_name"
-        case onboardingCompleted = "onboarding_completed"
-        case streak
-        case totalJournalEntries = "total_journal_entries"
-        case createdAt = "created_at"
         case updatedAt = "updated_at"
-    }
-}
-
-// MARK: - Authentication Result
-struct AuthResult {
-    let user: UserProfile
-    let session: AuthSession
-}
-
-struct AuthSession: Codable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-        case expiresAt = "expires_at"
-    }
-    
-    init(from supabaseSession: Session) {
-        self.accessToken = supabaseSession.accessToken
-        self.refreshToken = supabaseSession.refreshToken
-        self.expiresAt = Date(timeIntervalSince1970: supabaseSession.expiresAt)
     }
 }
 
@@ -135,131 +38,52 @@ class SupabaseService: ObservableObject {
     @Published var errorMessage: String?
     
     // MARK: - Private Properties
-    private var authSession: AuthSession?
-    private let supabase: SupabaseClient
+    private var supabase: SupabaseClient
+    private var authStateTask: Task<Void, Never>?
     
     // MARK: - Configuration
-    private let baseURL = "https://your-project.supabase.co" // Replace with your Supabase URL
-    private let apiKey = "your-anon-key" // Replace with your anon key
+    private let supabaseURL = "https://your-project.supabase.co" // Replace with your URL
+    private let supabaseKey = "your-anon-key" // Replace with your anon key
     
     // MARK: - Initialization
     init() {
-        // Initialize Supabase client
         self.supabase = SupabaseClient(
-            supabaseURL: URL(string: baseURL)!,
-            supabaseKey: apiKey
+            supabaseURL: URL(string: supabaseURL)!,
+            supabaseKey: supabaseKey
         )
         
-        // Set up auth state listener
-        setupAuthStateListener()
-        
-        // Check initial auth state
-        checkAuthenticationState()
+        startAuthStateListener()
     }
-
     
-    // MARK: - Auth State Management
-    private func setupAuthStateListener() {
-        Task {
-            for await (event, session) in supabase.auth.authStateChanges {
-                await handleAuthStateChange(event: event, session: session)
+    deinit {
+        authStateTask?.cancel()
+    }
+    
+    // MARK: - Auth State Listener
+    private func startAuthStateListener() {
+        authStateTask = Task {
+            for await state in supabase.auth.authStateChanges {
+                await handleAuthStateChange(state)
             }
         }
     }
     
-    private func handleAuthStateChange(event: AuthChangeEvent, session: Session?) async {
-        switch event {
+    private func handleAuthStateChange(_ state: AuthState) async {
+        switch state.event {
         case .signedIn:
-            if let session = session {
-                await handleSuccessfulAuth(session)
+            if let user = state.session?.user {
+                isAuthenticated = true
+                await loadUserProfile(userId: user.id)
             }
         case .signedOut:
-            await handleSignOut()
+            isAuthenticated = false
+            currentUser = nil
         case .tokenRefreshed:
-            if let session = session {
-                await updateSession(session)
+            if let user = state.session?.user {
+                await loadUserProfile(userId: user.id)
             }
         default:
             break
-        }
-    }
-    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
-        guard let id = entryData["id"] as? String,
-              let userId = entryData["user_id"] as? String,
-              let date = entryData["date"] as? String,
-              let userPath = entryData["user_path"] as? String,
-              let content = entryData["content"] as? String,
-              let createdAt = entryData["created_at"] as? String,
-              let updatedAt = entryData["updated_at"] as? String else {
-            print("Invalid entry data")
-            return false
-        }
-    
-        let payload = JournalEntryPayload(
-            id: id,
-            user_id: userId,
-            date: date,
-            user_path: userPath,
-            title: entryData["title"] as? String,
-            content: content,
-            mood: entryData["mood"] as? Int,
-            ai_summary: entryData["ai_summary"] as? String,
-            ai_reflection: entryData["ai_reflection"] as? String,
-            ai_insights: entryData["ai_insights"] as? String,
-            voice_note_url: entryData["voice_note_url"] as? String,
-            voice_transcript: entryData["voice_transcript"] as? String,
-            tags: entryData["tags"] as? String,
-            is_private: entryData["is_private"] as? Bool ?? false,
-            created_at: createdAt,
-            updated_at: updatedAt
-        )
-    
-        do {
-            try await supabase
-                .from("journal_entries")
-                .upsert(payload)
-                .execute()
-            return true
-        } catch {
-            print("Failed to sync journal entry: \(error)")
-            return false
-        }
-    }
-
-    func uploadVoiceNote(_ audioData: Data, fileName: String) async -> String? {
-        do {
-            try await supabase.storage
-                .from("voice-notes")
-                .upload(path: fileName, file: audioData, options: FileOptions(
-                    cacheControl: "3600",
-                    contentType: "audio/m4a"
-                ))
-    
-            let publicURL = try supabase.storage
-                .from("voice-notes")
-                .getPublicURL(path: fileName)
-    
-            return publicURL.absoluteString
-    
-        } catch {
-            print("Voice note upload failed: \(error)")
-            return nil
-        }
-    }
-
-    private func checkAuthenticationState() {
-        // Check for stored session
-        if let sessionData = UserDefaults.standard.data(forKey: "obex_auth_session"),
-           let session = try? JSONDecoder().decode(AuthSession.self, from: sessionData),
-           session.expiresAt > Date() {
-            
-            self.authSession = session
-            self.isAuthenticated = true
-            
-            // Load user profile
-            Task {
-                await loadUserProfile()
-            }
         }
     }
     
@@ -269,39 +93,20 @@ class SupabaseService: ObservableObject {
         errorMessage = nil
         
         do {
-            // Create auth user
-            let authResponse = try await supabase.auth.signUp(
+            let response = try await supabase.auth.signUp(
                 email: email,
                 password: password
             )
             
-            guard let session = authResponse.session else {
-                throw AuthError.registrationFailed
+            if let user = response.user {
+                // User profile will be created automatically via database trigger
+                isLoading = false
+                return true
+            } else {
+                errorMessage = "Sign up failed - please check your email for confirmation"
+                isLoading = false
+                return false
             }
-            
-            // Create user profile in database
-            let profileData = UserProfileDB(
-                id: UUID(uuidString: authResponse.user.id.uuidString) ?? UUID(),
-                email: email,
-                selectedPath: nil,
-                displayName: nil,
-                onboardingCompleted: false,
-                streak: 0,
-                totalJournalEntries: 0,
-                createdAt: Date(),
-                updatedAt: Date()
-            )
-            
-            try await supabase
-                .from("profiles")
-                .insert(profileData)
-                .execute()
-            
-            // Handle successful auth
-            await handleSuccessfulAuth(session)
-            
-            isLoading = false
-            return true
             
         } catch {
             errorMessage = mapSupabaseError(error)
@@ -316,12 +121,10 @@ class SupabaseService: ObservableObject {
         errorMessage = nil
         
         do {
-            let session = try await supabase.auth.signIn(
+            try await supabase.auth.signIn(
                 email: email,
                 password: password
             )
-            
-            await handleSuccessfulAuth(session)
             
             isLoading = false
             return true
@@ -339,13 +142,14 @@ class SupabaseService: ObservableObject {
         
         do {
             try await supabase.auth.signOut()
-            await handleSignOut()
+            
+            // State will be updated via auth state listener
+            isLoading = false
+            
         } catch {
-            // Even if remote signout fails, clear local state
-            await handleSignOut()
+            errorMessage = "Sign out failed"
+            isLoading = false
         }
-        
-        isLoading = false
     }
     
     // MARK: - Update User Path
@@ -356,20 +160,19 @@ class SupabaseService: ObservableObject {
         errorMessage = nil
         
         do {
-            try await supabase
-                .from("profiles")
+            let updatedProfile: UserProfile = try await supabase.database
+                .from("user_profiles")
                 .update([
                     "selected_path": path.rawValue,
                     "updated_at": ISO8601DateFormatter().string(from: Date())
                 ])
-                .eq("id", value: currentUser.id.uuidString)
+                .eq("id", value: currentUser.id)
+                .select()
+                .single()
                 .execute()
+                .value
             
-            // Update local user
-            var updatedUser = currentUser
-            updatedUser.selectedPath = path
-            self.currentUser = updatedUser
-            
+            self.currentUser = updatedProfile
             isLoading = false
             return true
             
@@ -388,20 +191,19 @@ class SupabaseService: ObservableObject {
         errorMessage = nil
         
         do {
-            try await supabase
-                .from("profiles")
+            let updatedProfile: UserProfile = try await supabase.database
+                .from("user_profiles")
                 .update([
-                    "onboarding_completed": AnyJSON.bool(true),
-                    "updated_at": AnyJSON.string(ISO8601DateFormatter().string(from: Date()))
+                    "onboarding_completed": true,
+                    "updated_at": ISO8601DateFormatter().string(from: Date())
                 ])
-                .eq("id", value: currentUser.id.uuidString)
+                .eq("id", value: currentUser.id)
+                .select()
+                .single()
                 .execute()
+                .value
             
-            // Update local user
-            var updatedUser = currentUser
-            updatedUser.onboardingCompleted = true
-            self.currentUser = updatedUser
-            
+            self.currentUser = updatedProfile
             isLoading = false
             return true
             
@@ -413,153 +215,48 @@ class SupabaseService: ObservableObject {
     }
     
     // MARK: - Update Display Name
-    func updateDisplayName(_ displayName: String) async -> Bool {
+    func updateDisplayName(_ name: String) async -> Bool {
         guard let currentUser = currentUser else { return false }
         
         isLoading = true
         errorMessage = nil
         
         do {
-            try await supabase
-                .from("profiles")
+            let updatedProfile: UserProfile = try await supabase.database
+                .from("user_profiles")
                 .update([
-                    "display_name": displayName,
+                    "display_name": name,
                     "updated_at": ISO8601DateFormatter().string(from: Date())
                 ])
-                .eq("id", value: currentUser.id.uuidString)
-                .execute()
-            
-            // Update local user
-            var updatedUser = currentUser
-            updatedUser.displayName = displayName
-            self.currentUser = updatedUser
-            
-            isLoading = false
-            return true
-            
-        } catch {
-            errorMessage = mapSupabaseError(error)
-            isLoading = false
-            return false
-        }
-    }
-    private struct JournalCountUpdatePayload: Codable {
-        let total_journal_entries: Int
-        let updated_at: String
-    }
-    // MARK: - Update Journal Entry Count
-    func updateJournalEntryCount(_ newCount: Int) async -> Bool {
-        guard let currentUser = currentUser else { return false }
-        
-        let payload = JournalCountUpdatePayload(
-            total_journal_entries: newCount,
-            updated_at: ISO8601DateFormatter().string(from: Date())
-        )
-        
-        do {
-            try await supabase
-                .from("profiles")
-                .update(payload)
-                .eq("id", value: currentUser.id.uuidString)
-                .execute()
-            
-            // Update local user
-            var updatedUser = currentUser
-            updatedUser.totalJournalEntries = newCount
-            self.currentUser = updatedUser
-            
-            return true
-            
-        } catch {
-            errorMessage = mapSupabaseError(error)
-            return false
-        }
-    }
-    
-    private struct StreakUpdatePayload: Codable {
-        let streak: Int
-        let updated_at: String
-    }
-    
-    // MARK: - Update Streak
-    func updateStreak(_ newStreak: Int) async -> Bool {
-        guard let currentUser = currentUser else { return false }
-        
-        let payload = StreakUpdatePayload(
-            streak: newStreak,
-            updated_at: ISO8601DateFormatter().string(from: Date())
-        )
-        do {
-            try await supabase
-                .from("profiles")
-                .update(payload)
-                .eq("id", value: currentUser.id.uuidString)
-                .execute()
-            
-            // Update local user
-            var updatedUser = currentUser
-            updatedUser.streak = newStreak
-            self.currentUser = updatedUser
-            
-            return true
-            
-        } catch {
-            errorMessage = mapSupabaseError(error)
-            return false
-        }
-    }
-    
-    // MARK: - Private Helper Methods
-    private func handleSuccessfulAuth(_ session: Session) async {
-        let authSession = AuthSession(from: session)
-        
-        // Store session
-        storeAuthSession(authSession)
-        
-        // Update state
-        self.authSession = authSession
-        self.isAuthenticated = true
-        
-        // Load user profile
-        await loadUserProfile()
-    }
-    
-    private func handleSignOut() async {
-        // Clear stored session
-        UserDefaults.standard.removeObject(forKey: "obex_auth_session")
-        
-        // Clear state
-        self.authSession = nil
-        self.currentUser = nil
-        self.isAuthenticated = false
-        self.errorMessage = nil
-    }
-    
-    private func updateSession(_ session: Session) async {
-        let authSession = AuthSession(from: session)
-        storeAuthSession(authSession)
-        self.authSession = authSession
-    }
-    
-    private func loadUserProfile() async {
-        guard let session = authSession else { return }
-        
-        do {
-            // Get current user from auth
-            let user = try await supabase.auth.user()
-            
-            // Get user profile from database
-            let profileResponse: [UserProfileDB] = try await supabase
-                .from("profiles")
+                .eq("id", value: currentUser.id)
                 .select()
-                .eq("id", value: user.id.uuidString)
+                .single()
                 .execute()
                 .value
             
-            let profile = profileResponse.first
-            let userProfile = UserProfile(from: user, profile: profile)
+            self.currentUser = updatedProfile
+            isLoading = false
+            return true
             
-            self.currentUser = userProfile
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
+            return false
+        }
+    }
+    
+    // MARK: - Load User Profile
+    private func loadUserProfile(userId: UUID) async {
+        do {
+            let profile: UserProfile = try await supabase.database
+                .from("user_profiles")
+                .select()
+                .eq("id", value: userId)
+                .single()
+                .execute()
+                .value
+            
+            self.currentUser = profile
             
         } catch {
             errorMessage = mapSupabaseError(error)
@@ -568,36 +265,52 @@ class SupabaseService: ObservableObject {
         }
     }
     
-    private func storeAuthSession(_ session: AuthSession) {
+    // MARK: - Password Reset
+    func resetPassword(email: String) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+        
         do {
-            let data = try JSONEncoder().encode(session)
-            UserDefaults.standard.set(data, forKey: "obex_auth_session")
+            try await supabase.auth.resetPasswordForEmail(email)
+            isLoading = false
+            return true
+            
         } catch {
-            print("Failed to store auth session: \(error)")
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
+            return false
         }
     }
     
+    // MARK: - Error Mapping
     private func mapSupabaseError(_ error: Error) -> String {
-        // Map Supabase-specific errors to user-friendly messages
         if let authError = error as? AuthError {
-            return authError.localizedDescription
+            switch authError {
+            case .invalidCredentials:
+                return "Invalid email or password"
+            case .signUpDisabled:
+                return "Sign up is currently disabled"
+            case .emailNotConfirmed:
+                return "Please check your email and confirm your account"
+            case .tooManyRequests:
+                return "Too many attempts. Please try again later"
+            case .weakPassword:
+                return "Password must be at least 6 characters"
+            default:
+                return authError.localizedDescription
+            }
         }
         
-        let errorString = error.localizedDescription.lowercased()
-        
-        if errorString.contains("invalid login credentials") {
-            return "Invalid email or password"
-        } else if errorString.contains("email not confirmed") {
-            return "Please check your email and confirm your account"
-        } else if errorString.contains("user already registered") {
-            return "An account with this email already exists"
-        } else if errorString.contains("weak password") {
-            return "Password must be at least 6 characters"
-        } else if errorString.contains("network") || errorString.contains("connection") {
-            return "Network connection error. Please try again."
-        } else {
-            return "Something went wrong. Please try again."
+        // Handle network and other errors
+        if error.localizedDescription.contains("network") {
+            return "Network connection error. Please check your internet connection"
         }
+        
+        if error.localizedDescription.contains("email") && error.localizedDescription.contains("already") {
+            return "This email is already registered"
+        }
+        
+        return error.localizedDescription
     }
 }
 
@@ -608,10 +321,10 @@ enum AuthError: LocalizedError {
     case userNotFound
     case weakPassword
     case emailAlreadyExists
-    case emailNotConfirmed
     case sessionExpired
-    case registrationFailed
-    case unknown(String)
+    case signUpDisabled
+    case emailNotConfirmed
+    case tooManyRequests
     
     var errorDescription: String? {
         switch self {
@@ -622,19 +335,17 @@ enum AuthError: LocalizedError {
         case .userNotFound:
             return "User not found"
         case .weakPassword:
-            return "Password must be at least 6 characters"
+            return "Password must be at least 8 characters"
         case .emailAlreadyExists:
             return "Email already registered"
-        case .emailNotConfirmed:
-            return "Please check your email and confirm your account"
         case .sessionExpired:
             return "Session expired. Please sign in again"
-        case .registrationFailed:
-            return "Registration failed. Please try again."
-        case .unknown(let message):
-            return message
+        case .signUpDisabled:
+            return "Sign up is currently disabled"
+        case .emailNotConfirmed:
+            return "Please confirm your email address"
+        case .tooManyRequests:
+            return "Too many requests. Please try again later"
         }
     }
 }
-
-
