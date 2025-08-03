@@ -81,20 +81,6 @@ class PersistenceController {
     let container: NSPersistentContainer
     
     init(inMemory: Bool = false) {
-        // Debug: Print the model name we're looking for
-        print("🔍 Looking for Core Data model: ObexModel")
-        
-        // Debug: Check if the model URL exists
-        if let modelURL = Bundle.main.url(forResource: "ObexModel", withExtension: "momd") {
-            print("✅ Found model at: \(modelURL)")
-        } else {
-            print("❌ Model not found in bundle")
-            // Try to find any .momd files
-            if let bundlePath = Bundle.main.bundlePath {
-                print("Bundle path: \(bundlePath)")
-            }
-        }
-        
         container = NSPersistentContainer(name: "ObexModel")
         
         if inMemory {
@@ -103,11 +89,7 @@ class PersistenceController {
         
         container.loadPersistentStores { _, error in
             if let error = error as NSError? {
-                print("❌ Core Data loading error: \(error)")
-                print("Error details: \(error.userInfo)")
                 fatalError("Core Data error: \(error), \(error.userInfo)")
-            } else {
-                print("✅ Core Data loaded successfully")
             }
         }
         
@@ -127,3 +109,4 @@ class PersistenceController {
         }
     }
 }
+
