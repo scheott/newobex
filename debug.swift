@@ -48,6 +48,11 @@ struct ObexApp: App {
 }
 
 // MARK: - Launch View
+// EntryPoint.swift
+
+import SwiftUI
+
+// MARK: - Launch View
 struct LaunchView: View {
     @State private var logoScale: CGFloat = 0.8
     @State private var logoOpacity: Double = 0.0
@@ -56,30 +61,29 @@ struct LaunchView: View {
         ZStack {
             Color.black
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 8) {
                 Text("OBEX")
                     .font(Themes.Typography.launchTitle)
                     .foregroundColor(.white)
-                    .scaleEffect(validateScale(logoScale))
-                    .opacity(validateOpacity(logoOpacity))
-                    .debugNaN("OBEX Title")
-                
+                    .safeScale(logoScale)
+                    .safeOpacity(logoOpacity)
+
                 Text("Elite Self-Discipline")
                     .font(Themes.Typography.caption)
                     .foregroundColor(.white.opacity(0.7))
-                    .opacity(validateOpacity(logoOpacity))
-                    .debugNaN("OBEX Subtitle")
+                    .safeOpacity(logoOpacity)
             }
         }
         .onAppear {
-            print("🎬 LaunchView appeared")
             withAnimation(.spring(response: 1.0, dampingFraction: 0.6).delay(0.2)) {
                 logoScale = 1.0
                 logoOpacity = 1.0
             }
         }
     }
+}
+
 
     // MARK: - Validation Helpers
     private func validateScale(_ value: CGFloat) -> CGFloat {
@@ -143,3 +147,16 @@ class PersistenceController {
         }
     }
 }
+
+import SwiftUI
+
+extension View {
+    func safeScale(_ scale: CGFloat) -> some View {
+        self.scaleEffect(scale.isFinite ? scale : 1.0)
+    }
+
+    func safeOpacity(_ opacity: Double) -> some View {
+        self.opacity(opacity.isFinite ? opacity : 1.0)
+    }
+}
+
