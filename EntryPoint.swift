@@ -20,16 +20,21 @@ struct ObexApp: App {
                                 }
                             }
                         }
-                } else if supabaseService.isAuthenticated {
+                } else if supabaseService.isAuthenticated, supabaseService.currentUser?.onboardingCompleted == true {
                     MainTabView()
                         .environmentObject(supabaseService)
                         .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                } else if supabaseService.isAuthenticated {
+                    OnboardingFlow()
+                        .environmentObject(supabaseService)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 } else {
                     OnboardingFlow()
                         .environmentObject(supabaseService)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
+
             }
             .animation(.spring(response: 0.8, dampingFraction: 0.8), value: isLaunching)
             .animation(.spring(response: 0.8, dampingFraction: 0.8), value: supabaseService.isAuthenticated)
