@@ -90,7 +90,8 @@ class SupabaseService: ObservableObject {
                 
                 switch authChange.event {
                 case .signedIn, .tokenRefreshed:
-                    if let session = authChange.session, let user = session.user {
+                    if let session = authChange.session {
+                        let user = session.user
                         print("[Supabase] User signed in: \(user.email ?? "unknown")")
                         isAuthenticated = true
                         await loadUserProfile(userId: user.id)
@@ -113,26 +114,19 @@ class SupabaseService: ObservableObject {
         errorMessage = nil
         
         do {
-            let response = try await supabase.auth.signUp(
+            _ = try await supabase.auth.signUp(
                 email: email,
                 password: password
             )
             
-            if let user = response.user {
-                // User profile will be created automatically via database trigger
-                isLoading = false
-                return true
-            } else {
+            isLoading = false
+            return true
+            } catch {
                 errorMessage = "Sign up failed - please check your email for confirmation"
                 isLoading = false
                 return false
             }
-            
-        } catch {
-            errorMessage = mapSupabaseError(error)
-            isLoading = false
-            return false
-        }
+
     }
     
     // MARK: - Sign In
@@ -203,6 +197,10 @@ class SupabaseService: ObservableObject {
         }
     }
     
+    struct OnboardingUpdate: Codable {
+        let onboarding_completed: Bool
+        let updated_at: String
+    }
     // MARK: - Complete Onboarding
     func completeOnboarding() async -> Bool {
         guard let currentUser = currentUser else { return false }
@@ -210,13 +208,15 @@ class SupabaseService: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        let payload = OnboardingUpdate(
+            onboarding_completed: true,
+            updated_at: ISO8601DateFormatter().string(from: Date())
+        )
+        
         do {
             let updatedProfile: UserProfile = try await supabase.database
                 .from("user_profiles")
-                .update([
-                    "onboarding_completed": true,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id)
                 .select()
                 .single()
@@ -307,6 +307,10 @@ class SupabaseService: ObservableObject {
         }
     }
     
+    struct JounralCountUpdate: Codable {
+        let total_journal_entries: Int
+        let updated_at: String
+    }
     // MARK: - Journal Entry Management
     func updateJournalEntryCount(_ newCount: Int) async -> Bool {
         guard let currentUser = currentUser else { return false }
@@ -314,13 +318,15 @@ class SupabaseService: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        let payload = JounralCountUpdate(
+            total_journal_entries: newCount,
+            updated_at: ISO8601DateFormatter().string(from: Date())
+        )
+        
         do {
             let updated: UserProfile = try await supabase.database
                 .from("user_profiles")
-                .update([
-                    "total_journal_entries": newCount,
-                    "updated_at": ISO8601DateFormatter().string(from: Date())
-                ])
+                .update(payload)
                 .eq("id", value: currentUser.id)
                 .select()
                 .single()
@@ -338,13 +344,13 @@ class SupabaseService: ObservableObject {
         }
     }
     
-    func syncJournalEntry(_ entry: JournalEntryUpload) async -> Bool {
+    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
         errorMessage = nil
         
         do {
             _ = try await supabase.database
                 .from("journal_entries")
-                .upsert(entry)
+                .upsert(entryData)
                 .execute()
             
             print("[Supabase] Journal entry synced successfully")
@@ -366,8 +372,8 @@ class SupabaseService: ObservableObject {
             
             // Upload the file
             try await bucket.upload(
-                path: fileName, 
-                file: data, 
+                path: fileName,
+                file: data,
                 options: FileOptions(contentType: "audio/m4a")
             )
             
