@@ -344,7 +344,7 @@ class SupabaseService: ObservableObject {
         }
     }
     
-    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
+    func syncJournalEntry(_ entryData: JournalEntryUpload) async -> Bool {
         errorMessage = nil
         
         do {
