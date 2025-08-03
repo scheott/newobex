@@ -420,28 +420,28 @@ class JournalViewModel: ObservableObject {
     
     private func syncToSupabase(_ entry: JournalEntry) async {
         guard let currentUser = supabaseService.currentUser else { return }
-        
-        let entryData: [String: Any] = [
-            "id": entry.id?.uuidString ?? UUID().uuidString,
-            "user_id": currentUser.id.uuidString,
-            "date": ISO8601DateFormatter.shared.string(from: entry.date ?? Date()),
-            "user_path": entry.userPath ?? "clarity",
-            "title": entry.title,
-            "content": entry.content ?? "",
-            "mood": entry.mood != 0 ? Int(entry.mood) : nil,
-            "ai_summary": entry.aiSummary,
-            "ai_reflection": entry.aiReflection,
-            "ai_insights": entry.aiInsights,
-            "voice_note_url": entry.voiceNoteURL,
-            "voice_transcript": entry.voiceTranscript,
-            "tags": entry.tags,
-            "is_private": entry.isPrivate,
-            "created_at": ISO8601DateFormatter.shared.string(from: entry.createdAt ?? Date()),
-            "updated_at": ISO8601DateFormatter.shared.string(from: entry.updatedAt ?? Date())
-        ]
-        
-        let success = await supabaseService.syncJournalEntry(entryData)
-        
+    
+        let upload = JournalEntryUpload(
+            id: entry.id?.uuidString ?? UUID().uuidString,
+            user_id: currentUser.id.uuidString,
+            date: ISO8601DateFormatter.shared.string(from: entry.date ?? Date()),
+            user_path: entry.userPath ?? "clarity",
+            title: entry.title,
+            content: entry.content ?? "",
+            mood: entry.mood != 0 ? Int(entry.mood) : nil,
+            ai_summary: entry.aiSummary,
+            ai_reflection: entry.aiReflection,
+            ai_insights: entry.aiInsights,
+            voice_note_url: entry.voiceNoteURL,
+            voice_transcript: entry.voiceTranscript,
+            tags: entry.tags,
+            is_private: entry.isPrivate,
+            created_at: ISO8601DateFormatter.shared.string(from: entry.createdAt ?? Date()),
+            updated_at: ISO8601DateFormatter.shared.string(from: entry.updatedAt ?? Date())
+        )
+    
+        let success = await supabaseService.syncJournalEntry(upload)
+    
         if success {
             print("Successfully synced entry \(entry.id?.uuidString ?? "unknown") to Supabase")
         } else {
@@ -449,7 +449,7 @@ class JournalViewModel: ObservableObject {
             errorMessage = "Entry saved locally but cloud sync failed"
         }
     }
-    
+
     // MARK: - Voice Note Upload
     func uploadVoiceNote(_ audioData: Data, for entryId: UUID) async -> String? {
         guard let currentUser = supabaseService.currentUser else { return nil }
