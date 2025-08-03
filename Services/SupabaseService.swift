@@ -338,7 +338,7 @@ class SupabaseService: ObservableObject {
     }
     
     // MARK: - Voice Note Management
-    func uploadVoiceNote(data: Data, filename: String) async -> String? {
+    func uploadVoiceNote(_ data: Data, fileName: String) async -> String? {
         errorMessage = nil
         
         do {
@@ -346,15 +346,15 @@ class SupabaseService: ObservableObject {
             
             // Upload the file
             try await bucket.upload(
-                path: filename, 
+                path: fileName, 
                 file: data, 
                 options: FileOptions(contentType: "audio/m4a")
             )
             
             // Get the public URL
-            let url = try bucket.getPublicURL(path: filename)
+            let url = try bucket.getPublicURL(path: fileName)
             
-            print("[Supabase] Voice note uploaded successfully: \(filename)")
+            print("[Supabase] Voice note uploaded successfully: \(fileName)")
             return url.absoluteString
             
         } catch {
