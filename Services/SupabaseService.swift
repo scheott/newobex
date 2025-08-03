@@ -41,6 +41,9 @@ class SupabaseService: ObservableObject {
     private var supabase: SupabaseClient
     private var authStateTask: Task<Void, Never>?
     
+    // MARK: - Public Getters
+    var supabaseClient: SupabaseClient { return supabase }
+    
     // MARK: - Configuration
     private let supabaseURL = "https://your-project.supabase.co" // Replace with your URL
     private let supabaseKey = "your-anon-key" // Replace with your anon key
@@ -62,28 +65,25 @@ class SupabaseService: ObservableObject {
     // MARK: - Auth State Listener
     private func startAuthStateListener() {
         authStateTask = Task {
-            for await state in supabase.auth.authStateChanges {
-                await handleAuthStateChange(state)
+            for await authChange in supabase.auth.authStateChanges {
+                print("[Supabase] Auth state changed: \(authChange.event)")
+                
+                switch authChange.event {
+                case .signedIn, .tokenRefreshed:
+                    if let session = authChange.session, let user = session.user {
+                        print("[Supabase] User signed in: \(user.email ?? "unknown")")
+                        isAuthenticated = true
+                        await loadUserProfile(userId: user.id)
+                    }
+                case .signedOut:
+                    print("[Supabase] User signed out")
+                    isAuthenticated = false
+                    currentUser = nil
+                default:
+                    print("[Supabase] Auth event: \(authChange.event)")
+                    break
+                }
             }
-        }
-    }
-    
-    private func handleAuthStateChange(_ state: AuthState) async {
-        switch state.event {
-        case .signedIn:
-            if let user = state.session?.user {
-                isAuthenticated = true
-                await loadUserProfile(userId: user.id)
-            }
-        case .signedOut:
-            isAuthenticated = false
-            currentUser = nil
-        case .tokenRefreshed:
-            if let user = state.session?.user {
-                await loadUserProfile(userId: user.id)
-            }
-        default:
-            break
         }
     }
     
@@ -246,7 +246,10 @@ class SupabaseService: ObservableObject {
     }
     
     // MARK: - Load User Profile
+    @MainActor
     private func loadUserProfile(userId: UUID) async {
+        print("[Supabase] Loading user profile for: \(userId)")
+        
         do {
             let profile: UserProfile = try await supabase.database
                 .from("user_profiles")
@@ -256,9 +259,11 @@ class SupabaseService: ObservableObject {
                 .execute()
                 .value
             
+            print("[Supabase] User profile loaded successfully")
             self.currentUser = profile
             
         } catch {
+            print("[Supabase] Failed to load user profile: \(error)")
             errorMessage = mapSupabaseError(error)
             // If profile load fails, sign out
             await signOut()
@@ -278,6 +283,100 @@ class SupabaseService: ObservableObject {
         } catch {
             errorMessage = mapSupabaseError(error)
             isLoading = false
+            return false
+        }
+    }
+    
+    // MARK: - Journal Entry Management
+    func updateJournalEntryCount(_ newCount: Int) async -> Bool {
+        guard let currentUser = currentUser else { return false }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        do {
+            let updated: UserProfile = try await supabase.database
+                .from("user_profiles")
+                .update([
+                    "total_journal_entries": newCount,
+                    "updated_at": ISO8601DateFormatter().string(from: Date())
+                ])
+                .eq("id", value: currentUser.id)
+                .select()
+                .single()
+                .execute()
+                .value
+            
+            self.currentUser = updated
+            isLoading = false
+            return true
+            
+        } catch {
+            errorMessage = mapSupabaseError(error)
+            isLoading = false
+            return false
+        }
+    }
+    
+    func syncJournalEntry(_ entryData: [String: Any]) async -> Bool {
+        errorMessage = nil
+        
+        do {
+            _ = try await supabase.database
+                .from("journal_entries")
+                .upsert(entryData)
+                .execute()
+            
+            print("[Supabase] Journal entry synced successfully")
+            return true
+            
+        } catch {
+            print("[Supabase] Failed to sync journal entry: \(error)")
+            errorMessage = "Failed to sync entry: \(error.localizedDescription)"
+            return false
+        }
+    }
+    
+    // MARK: - Voice Note Management
+    func uploadVoiceNote(data: Data, filename: String) async -> String? {
+        errorMessage = nil
+        
+        do {
+            let bucket = supabase.storage.from("voice-notes")
+            
+            // Upload the file
+            try await bucket.upload(
+                path: filename, 
+                file: data, 
+                options: FileOptions(contentType: "audio/m4a")
+            )
+            
+            // Get the public URL
+            let url = try bucket.getPublicURL(path: filename)
+            
+            print("[Supabase] Voice note uploaded successfully: \(filename)")
+            return url.absoluteString
+            
+        } catch {
+            print("[Supabase] Failed to upload voice note: \(error)")
+            errorMessage = "Failed to upload voice note: \(error.localizedDescription)"
+            return nil
+        }
+    }
+    
+    func deleteVoiceNote(filename: String) async -> Bool {
+        errorMessage = nil
+        
+        do {
+            let bucket = supabase.storage.from("voice-notes")
+            try await bucket.remove(paths: [filename])
+            
+            print("[Supabase] Voice note deleted successfully: \(filename)")
+            return true
+            
+        } catch {
+            print("[Supabase] Failed to delete voice note: \(error)")
+            errorMessage = "Failed to delete voice note: \(error.localizedDescription)"
             return false
         }
     }
